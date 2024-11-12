@@ -18,6 +18,7 @@ import (
 // getClientset returns a Kubernetes clientset.
 func getClientset() (*kubernetes.Clientset, error) {
 	var kubeconfig *string
+
 	if home := os.Getenv("HOME"); home != "" {
 		kubeconfig = flag.String("kubeconfig", home+"/.kube/config", "(optional) absolute path to the kubeconfig file")
 	} else {
@@ -25,9 +26,14 @@ func getClientset() (*kubernetes.Clientset, error) {
 	}
 	flag.Parse()
 
+	if envKubeconfig := os.Getenv("KUBECONFIG"); envKubeconfig != "" {
+		kubeconfig = &envKubeconfig
+	}
+
 	// In-cluster config or out-of-cluster config
 	config, err := rest.InClusterConfig()
 	if err != nil {
+		fmt.Printf("kube config: %s\n", *kubeconfig)
 		config, err = clientcmd.BuildConfigFromFlags("", *kubeconfig)
 		if err != nil {
 			return nil, err
@@ -39,6 +45,7 @@ func getClientset() (*kubernetes.Clientset, error) {
 	if err != nil {
 		return nil, err
 	}
+	// fmt.Printf("Successfully created Kubernetes clientset %v", clientset)
 	return clientset, nil
 }
 

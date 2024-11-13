@@ -4,8 +4,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"syscall"
+	"time"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/fields"
@@ -14,6 +16,11 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
 )
+
+// every Pod IP change is a change in the feed
+type Change struct {
+	Topic string
+}
 
 // getClientset returns a Kubernetes clientset.
 func getClientset() (*kubernetes.Clientset, error) {
@@ -49,8 +56,73 @@ func getClientset() (*kubernetes.Clientset, error) {
 	return clientset, nil
 }
 
+// Action is the action to perform when there are changes for a specific topic
+func Action(topic string, count int) {
+	fmt.Printf("%s: Action triggered with %d changes\n", topic, count)
+
+	// Prepare the command
+	cmd := exec.Command("/bin/bash", "-c", "./refreshFeed.sh "+topic)
+
+	// Run the command and capture the output
+	output, err := cmd.Output()
+	if err != nil {
+		fmt.Println("Error:", err)
+		return
+	}
+
+	// Print the output
+	fmt.Println(string(output))
+}
+
 // watchPodIPChanges watches for changes in pod IPs.
 func watchPodIPChanges(clientset *kubernetes.Clientset) {
+
+	// every pod IP change is a change in the feed
+	changes := make(chan Change)
+	defer close(changes)
+
+	// Goroutine to monitor changes and perform actions per topic
+	go func() {
+		const checkIntervalSec = 10
+		ticker := time.NewTicker(checkIntervalSec * time.Second)
+		defer ticker.Stop()
+		changeCount := make(map[string]int)
+
+		for {
+			select {
+			case change, ok := <-changes:
+				if !ok {
+					// If channel is closed, perform final actions for all topics with pending changes
+
+					for topic, count := range changeCount {
+						if count > 0 {
+							Action(topic, count)
+						}
+					}
+					return
+				}
+
+				// Update count for the change's topic
+
+				changeCount[change.Topic]++
+				fmt.Printf("%s: Received change: %+v\n", change.Topic, change)
+
+			case <-ticker.C:
+				// Check counts for each topic and perform actions if there are changes
+				for topic, count := range changeCount {
+					if count > 0 {
+						Action(topic, count)
+						// Reset the count after action is performed
+						changeCount[topic] = 0
+					} else {
+						fmt.Printf("%s: No changes in the last %d seconds\n", topic, checkIntervalSec)
+					}
+				}
+
+			}
+		}
+	}()
+
 	// Create a ListWatch for Pods
 	listWatch := cache.NewListWatchFromClient(
 		clientset.CoreV1().RESTClient(),
@@ -62,20 +134,20 @@ func watchPodIPChanges(clientset *kubernetes.Clientset) {
 	// Define event handler functions
 	handleAdd := func(obj interface{}) {
 		pod := obj.(*v1.Pod)
-		printPodInfo("+", pod)
+		handlePodChange("+", pod, changes)
 	}
 
 	handleUpdate := func(oldObj, newObj interface{}) {
 		oldPod := oldObj.(*v1.Pod)
 		newPod := newObj.(*v1.Pod)
 		if oldPod.Status.PodIP != newPod.Status.PodIP {
-			printPodInfo("~", newPod)
+			handlePodChange("~", newPod, changes)
 		}
 	}
 
 	handleDelete := func(obj interface{}) {
 		pod := obj.(*v1.Pod)
-		printPodInfo("-", pod)
+		handlePodChange("-", pod, changes)
 	}
 
 	// Create an Informer
@@ -109,8 +181,8 @@ func watchPodIPChanges(clientset *kubernetes.Clientset) {
 	informer.Run(stopCh)
 }
 
-// printPodInfo prints the Pod name, namespace, and IP.
-func printPodInfo(op string, pod *v1.Pod) {
+// handlePodChange prints the Pod name, namespace, and IP.
+func handlePodChange(op string, pod *v1.Pod, changes chan Change) {
 	ip := "<none>"
 	if pod.Status.PodIP != "" {
 		ip = pod.Status.PodIP
@@ -128,9 +200,30 @@ func printPodInfo(op string, pod *v1.Pod) {
 	}
 
 	fmt.Printf("%s: IP: %s Pod: %s, Namespace: %s, Labels: %s \n", op, ip, pod.Name, pod.Namespace, labels)
+	if pod.Status.PodIP != "" {
+		reportPodIpUpdate(pod, changes)
+	}
+}
+
+// reportPodIpUpdate counts the pod IP updates
+func reportPodIpUpdate(pod *v1.Pod, changes chan Change) {
+
+	// extract app label
+	appLabel := pod.Labels["app"]
+	if appLabel != "" {
+		//fmt.Printf("App label: %s\n", appLabel)
+		// combine namespace and app label to uniq key
+		key := fmt.Sprintf("%s-%s", pod.Namespace, appLabel)
+		// fmt.Printf("Key: %s\n", key)
+
+		changes <- Change{Topic: key}
+	}
+
+	// fmt.Printf("Reporting IP update for pod %s in namespace %s with IP %s\n", pod.Name, pod.Namespace, pod.Status.PodIP)
 }
 
 func main() {
+
 	clientset, err := getClientset()
 	if err != nil {
 		fmt.Printf("Error creating Kubernetes client: %v\n", err)

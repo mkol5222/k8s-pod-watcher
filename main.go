@@ -61,7 +61,7 @@ func Action(topic string, count int) {
 	fmt.Printf("%s: Action triggered with %d changes\n", topic, count)
 
 	// Prepare the command
-	cmd := exec.Command("/bin/bash", "-c", "./refreshFeed.sh "+topic)
+	cmd := exec.Command("/bin/bash", "-c", "/home/admin/refreshFeed.sh "+topic)
 
 	// Run the command and capture the output
 	output, err := cmd.Output()
@@ -83,7 +83,7 @@ func watchPodIPChanges(clientset *kubernetes.Clientset) {
 
 	// Goroutine to monitor changes and perform actions per topic
 	go func() {
-		const checkIntervalSec = 10
+		const checkIntervalSec = 3
 		ticker := time.NewTicker(checkIntervalSec * time.Second)
 		defer ticker.Stop()
 		changeCount := make(map[string]int)
@@ -115,7 +115,7 @@ func watchPodIPChanges(clientset *kubernetes.Clientset) {
 						// Reset the count after action is performed
 						changeCount[topic] = 0
 					} else {
-						fmt.Printf("%s: No changes in the last %d seconds\n", topic, checkIntervalSec)
+						//fmt.Printf("%s: No changes in the last %d seconds\n", topic, checkIntervalSec)
 					}
 				}
 
